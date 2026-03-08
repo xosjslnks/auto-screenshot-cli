@@ -7,6 +7,7 @@ Capture websites (full page, viewport, devices), screen regions, windows, Androi
 import argparse
 import asyncio
 import datetime
+import io
 import json
 import os
 import re
@@ -18,18 +19,12 @@ from PIL import Image
 import pyautogui
 from colorama import init, Fore, Style
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-from tqdm import tqdm
 import requests
 
 init(autoreset=True)
 
-COLOR = True  # colorama aktif
-
 def cprint(text, color=Fore.WHITE, **kwargs):
-    if COLOR:
-        print(color + text + Style.RESET_ALL, **kwargs)
-    else:
-        print(text, **kwargs)
+    print(color + text + Style.RESET_ALL, **kwargs)
 
 def get_timestamp():
     return datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -64,17 +59,14 @@ async def screenshot_web(url: str, args):
         try:
             cprint(f"Loading {url} ...", Fore.CYAN)
 
-            # Navigate
             await page.goto(url, wait_until="networkidle", timeout=60000)
 
-            # Wait for selector if specified
             if args.wait_selector:
                 try:
                     await page.wait_for_selector(args.wait_selector, timeout=15000)
                 except PlaywrightTimeout:
                     cprint("Wait selector not found in time, continuing...", Fore.YELLOW)
 
-            # Hide elements
             if args.hide_selectors:
                 for sel in args.hide_selectors.split(","):
                     sel = sel.strip()
@@ -82,17 +74,18 @@ async def screenshot_web(url: str, args):
                         document.querySelectorAll('{sel}').forEach(el => el.style.display = 'none');
                     }}""")
 
-            # Delay extra if needed
             if args.delay > 0:
                 await asyncio.sleep(args.delay)
 
-            # Capture
+            # Fix: ambil viewport sebagai dict dulu, lalu unpack size
+            viewport = await page.viewport_size  # ini dict {'width': ..., 'height': ...}
             if args.full_page:
                 screenshot_bytes = await page.screenshot(full_page=True, type="png")
+                # Untuk full-page, Playwright sudah handle size, jadi kita ambil dari metadata atau fallback
+                img = Image.open(io.BytesIO(screenshot_bytes))
             else:
                 screenshot_bytes = await page.screenshot(type="png")
-
-            img = Image.frombytes("RGBA", (await page.viewport_size.values()), screenshot_bytes) if args.full_page else Image.open(io.BytesIO(screenshot_bytes))
+                img = Image.open(io.BytesIO(screenshot_bytes))
 
             # Naming
             domain = get_domain_from_url(url)
@@ -101,7 +94,6 @@ async def screenshot_web(url: str, args):
 
             save_image(img, output_path)
 
-            # Upload if requested
             if args.upload:
                 await upload_to_imgur(output_path, args.upload_key)
 
@@ -167,13 +159,10 @@ async def main():
 
     # Common options
     parser.add_argument("--output", type=str, help="Output file path (default: auto timestamp)")
-    parser.add_argument("--upload", action="store_true", help="Upload to Imgur (set IMGUR_CLIENT_ID env var)")
+    parser.add_argument("--upload", action="store_true", help="Upload to Imgur (requires IMGUR_CLIENT_ID env or --upload-key)")
     parser.add_argument("--upload-key", type=str, help="Imgur Client-ID (override env)")
 
     args = parser.parse_args()
-
-    output = args.output or f"screenshot_{get_timestamp()}.png"
-    output_path = Path(output)
 
     if args.web:
         if not args.web.startswith(("http://", "https://")):
@@ -181,10 +170,12 @@ async def main():
         await screenshot_web(args.web, args)
 
     elif args.full_screen:
-        screenshot_screen_full(output_path)
+        output = args.output or f"screenshot_{get_timestamp()}.png"
+        screenshot_screen_full(Path(output))
 
     elif args.region:
-        screenshot_region(*args.region, output_path)
+        output = args.output or f"screenshot_{get_timestamp()}.png"
+        screenshot_region(*args.region, Path(output))
 
     else:
         parser.print_help()
