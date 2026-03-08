@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
 Advanced Auto Screenshot CLI
-Capture websites (full page, viewport, devices), screen regions, windows, Android (ADB), with advanced options
+Capture websites (full page, viewport, devices), screen regions, with advanced options
 """
 
 import argparse
 import asyncio
 import datetime
 import io
-import json
 import os
-import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,6 +18,7 @@ import pyautogui
 from colorama import init, Fore, Style
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 import requests
+import pyperclip  # untuk clipboard setelah upload
 
 init(autoreset=True)
 
@@ -77,15 +76,16 @@ async def screenshot_web(url: str, args):
             if args.delay > 0:
                 await asyncio.sleep(args.delay)
 
-            # Fix: ambil viewport sebagai dict dulu, lalu unpack size
-            viewport = await page.viewport_size  # ini dict {'width': ..., 'height': ...}
+            # FIX: viewport_size adalah property sync (dict), BUKAN async → hilangkan await
+            viewport = page.viewport_size  # langsung dict {'width': ..., 'height': ...}
+
             if args.full_page:
                 screenshot_bytes = await page.screenshot(full_page=True, type="png")
-                # Untuk full-page, Playwright sudah handle size, jadi kita ambil dari metadata atau fallback
-                img = Image.open(io.BytesIO(screenshot_bytes))
             else:
                 screenshot_bytes = await page.screenshot(type="png")
-                img = Image.open(io.BytesIO(screenshot_bytes))
+
+            # Buka dari bytes (Playwright handle size internal, tidak perlu manual frombytes lagi)
+            img = Image.open(io.BytesIO(screenshot_bytes))
 
             # Naming
             domain = get_domain_from_url(url)
@@ -95,7 +95,7 @@ async def screenshot_web(url: str, args):
             save_image(img, output_path)
 
             if args.upload:
-                await upload_to_imgur(output_path, args.upload_key)
+                await upload_to_imgur(output_path, args.upload_key or os.getenv("IMGUR_CLIENT_ID"))
 
         except Exception as e:
             cprint(f"Error capturing {url}: {str(e)}", Fore.RED)
@@ -105,7 +105,7 @@ async def screenshot_web(url: str, args):
 
 async def upload_to_imgur(image_path: Path, client_id=None):
     if not client_id:
-        cprint("No Imgur Client-ID provided. Skipping upload.", Fore.YELLOW)
+        cprint("No Imgur Client-ID provided (set IMGUR_CLIENT_ID env or --upload-key). Skipping upload.", Fore.YELLOW)
         return
 
     try:
@@ -136,31 +136,28 @@ def screenshot_region(x, y, w, h, output_path):
     cprint(f"Region saved: {output_path}", Fore.GREEN)
 
 async def main():
-    parser = argparse.ArgumentParser(description="Advanced Auto Screenshot CLI - Web, Screen, Region")
+    parser = argparse.ArgumentParser(description="Advanced Auto Screenshot CLI")
     group = parser.add_mutually_exclusive_group(required=True)
 
-    # Web capture
     group.add_argument("--web", type=str, help="URL to screenshot")
     parser.add_argument("--full-page", action="store_true", help="Capture full scrollable page")
-    parser.add_argument("--viewport-width", type=int, default=1920, help="Viewport width")
-    parser.add_argument("--viewport-height", type=int, default=1080, help="Viewport height")
-    parser.add_argument("--dark-mode", action="store_true", help="Force dark theme")
-    parser.add_argument("--mobile", action="store_true", help="Emulate mobile device")
-    parser.add_argument("--touch", action="store_true", help="Enable touch emulation")
-    parser.add_argument("--high-dpi", action="store_true", help="2x scale for retina")
-    parser.add_argument("--user-agent", type=str, help="Custom User-Agent")
-    parser.add_argument("--wait-selector", type=str, help="Wait for this CSS selector")
-    parser.add_argument("--hide", dest="hide_selectors", type=str, help="Hide CSS selectors (comma separated)")
-    parser.add_argument("--delay", type=float, default=0, help="Extra delay after load (seconds)")
+    parser.add_argument("--viewport-width", type=int, default=1920)
+    parser.add_argument("--viewport-height", type=int, default=1080)
+    parser.add_argument("--dark-mode", action="store_true")
+    parser.add_argument("--mobile", action="store_true")
+    parser.add_argument("--touch", action="store_true")
+    parser.add_argument("--high-dpi", action="store_true")
+    parser.add_argument("--user-agent", type=str)
+    parser.add_argument("--wait-selector", type=str)
+    parser.add_argument("--hide", dest="hide_selectors", type=str)
+    parser.add_argument("--delay", type=float, default=0)
 
-    # Screen / Region
-    group.add_argument("--full-screen", action="store_true", help="Capture entire screen")
-    group.add_argument("--region", nargs=4, type=int, metavar=("X","Y","W","H"), help="Capture region x y width height")
+    group.add_argument("--full-screen", action="store_true")
+    group.add_argument("--region", nargs=4, type=int, metavar=("X","Y","W","H"))
 
-    # Common options
-    parser.add_argument("--output", type=str, help="Output file path (default: auto timestamp)")
-    parser.add_argument("--upload", action="store_true", help="Upload to Imgur (requires IMGUR_CLIENT_ID env or --upload-key)")
-    parser.add_argument("--upload-key", type=str, help="Imgur Client-ID (override env)")
+    parser.add_argument("--output", type=str)
+    parser.add_argument("--upload", action="store_true")
+    parser.add_argument("--upload-key", type=str)
 
     args = parser.parse_args()
 
